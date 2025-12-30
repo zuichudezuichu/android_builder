@@ -1,0 +1,76 @@
+# This is a basic workflow that is manually triggered
+
+name: Manual workflow
+
+# Controls when the action will run. Workflow runs when manually triggered using the UI
+# or API.
+on:
+  workflow_dispatch:
+    # Inputs the workflow accepts.
+    inputs:
+      name:
+        # Friendly description to be shown in the UI instead of 'name'
+        description: 'Person to greet'
+        # Default value if no value is explicitly provided
+        default: 'World'
+        # Input has to be provided for the workflow to run
+        required: true
+        # The data type of the input
+        type: string
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "greet"
+  greet:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+    # Runs a single command using the runners shell
+    - name: Send greeting
+      run: echo "Hello ${{ inputs.name }}"
+            - 名称：安装 Java JDK
+  使用：actions/setup-java@v5.1.0
+  和：
+    # 要设置的 Java 版本。可以指定完整的 Java 版本号或语义化版本号。请参阅 README 文件中支持的语法示例。
+    java-version: # 可选
+    # `.java-version` 文件的路径。请参阅 README 文件中支持的语法示例。
+    java-version-file: # 可选
+    # Java 发行版。请参阅 README 文件中支持的发行版列表。
+    分配：
+    # 软件包类型（jdk、jre、jdk+fx、jre+fx）
+    java-package：# 可选，默认为 jdk
+    # 包的架构（默认为操作运行器的架构）
+    架构：# 可选
+    # 压缩后的 JDK 所在路径
+    jdkFile: # 可选
+    # 如果您希望操作检查满足版本规范的最新可用版本，请设置此选项。
+    check-latest: # 可选
+    # pom.xml 文件中 distributionManagement 仓库的 ID。默认值为 `github`
+    server-id: # 可选，默认为 github
+    # 用于 Apache Maven 仓库身份验证的用户名环境变量名称。默认值为 $GITHUB_ACTOR
+    server-username: # 可选，默认为 GITHUB_ACTOR
+    # 用于 Apache Maven 仓库身份验证的密码或令牌的环境变量名称。默认值为 $GITHUB_TOKEN
+    server-password: # 可选，默认值为 GITHUB_TOKEN
+    # settings.xml 文件的写入路径。默认值为 ~/.m2。
+    设置路径：# 可选
+    # 如果 settings.xml 文件存在，则覆盖该文件。默认值为“true”。
+    overwrite-settings: # 可选，默认为 true
+    # 要导入的 GPG 私钥。默认值为空字符串。
+    gpg-private-key: # 可选
+    # GPG 私钥密码短语的环境变量名称。默认值为 $GPG_PASSPHRASE。
+    gpg-passphrase: # 可选
+    # 用于缓存依赖项的构建平台名称。可以是“maven”、“gradle”或“sbt”。
+    缓存：# 可选
+    # 依赖文件的路径：pom.xml、build.gradle、build.sbt 等。此选项可与 `cache` 选项一起使用。如果省略此选项，则操作会在整个仓库中搜索依赖文件。此选项支持通配符和文件名列表，用于缓存多个依赖项。
+    cache-dependency-path: # 可选
+    # 将此变通方法用于将作业状态传递给作业后处理步骤。此变量不建议手动设置。
+    job-status: # 可选，默认值为 ${{ job.status }}
+    # 用于从 github.com 获取版本清单（例如 Microsoft Build 版 OpenJDK）时进行身份验证的令牌。在 github.com 上运行此操作时，默认值即可。在 GHES 上运行此操作时，如果遇到速率限制，您可以传递 github.com 的个人访问令牌。
+    token: # 可选，默认值为 ${{ github.server_url == 'https://github.com' && github.token || '' }}
+    # 如果不需要默认名称“${distribution}_${java-version}”，则需要指定 Maven 工具链 ID 的名称。请参阅高级用法文件中支持的语法示例。
+    mvn-toolchain-id: # 可选
+    # 如果不需要默认名称“${distribution}”，则需要指定 Maven 工具链供应商的名称。请参阅高级用法文件中支持的语法示例。
+    mvn-toolchain-vendor：# 可选
+          
