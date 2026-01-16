@@ -6,105 +6,131 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120  # 延长超时适配编译
 
     steps:
       - name: 查看代码
         uses: actions/checkout@v4
 
-      # 1. 安装 Python 3.8 环境
-      - name: 安装 Python 3.8 环境
+      # 1. 系统环境准备（源码编译 Python 3.8，避开 PPA 源）
+      - name: 安装依赖并编译 Python 3.8
         run: |
           sudo apt update
-          sudo apt install -y software-properties-common
-          sudo add-apt-repository -y ppa:deadsnakes/ppa
-          sudo apt update
-          sudo apt install -y python3.8 python3.8-dev python3.8-distutils python3-pip
-          sudo ln -sf /usr/bin/python3.8 /usr/bin/python
-          sudo ln -sf /usr/bin/pip3 /usr/bin/pip
+          sudo apt install -y \
+            build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev \
+            libssl-dev libreadline-dev libffi-dev libbz2-dev wget openjdk-11-jdk \
+            unzip python3-pip python3-setuptools python3-wheel
+          
+          # 下载 Python 3.8.19 源码
+          wget https://www.python.org/ftp/python/3.8.19/Python-3.8.19.tgz -O /tmp/python38.tgz
+          tar -xf /tmp/python38.tgz -C /tmp
+          
+          # 编译安装（不覆盖系统 Python）
+          cd /tmp/Python-3.8.19
+          ./configure --enable-optimizations --prefix=/usr/local/python38 --with-ensurepip=install
+          make -j$(nproc)
+          sudo make install
+          
+          # 创建软链接，统一命令
+          sudo ln -sf /usr/local/python38/bin/python3.8 /usr/bin/python
+          sudo ln -sf /usr/local/python38/bin/pip3.8 /usr/bin/pip
+          
+          # 升级工具链
           pip install --upgrade pip setuptools wheel
           python --version
+          pip --version
 
-      # 2. 配置 JDK 11 环境
-      - name: 配置 JDK 11
+      # 2. 配置 JDK 11（Gradle 7.5 兼容）
+      - name: 配置 JDK 11 环境
         run: |
-          sudo update-alternatives --set java /usr/lib/jvm/temurin-11-jdk-amd64/bin/java
-          sudo update-alternatives --set javac /usr/lib/jvm/temurin-11-jdk-amd64/bin/javac
-          echo "JAVA_HOME=/usr/lib/jvm/temurin-11-jdk-amd64" >> $GITHUB_ENV
+          sudo update-alternatives --set java /usr/lib/jvm/java-11-openjdk-amd64/bin/java
+          sudo update-alternatives --set javac /usr/lib/jvm/java-11-openjdk-amd64/bin/javac
+          echo "JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64" >> $GITHUB_ENV
           echo "GRADLE_OPTS=-Xmx4g -Dorg.gradle.daemon=false" >> $GITHUB_ENV
 
-      # 3. 配置 Android SDK
-      - name: 配置 Android SDK
+      # 3. 配置 Android SDK（手动下载，避免版本问题）
+      - name: 配置 Android SDK 环境
         run: |
-          ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"
+          ANDROID_SDK_ROOT="/usr/local/android-sdk"
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+          # 下载命令行工具
+          wget https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip -O /tmp/sdk-tools.zip
+          unzip -q /tmp/sdk-tools.zip -d $ANDROID_SDK_ROOT/cmdline-tools
+          mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
+          # 环境变量
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH" >> $GITHUB_ENV
+          # 接受许可
           mkdir -p $ANDROID_SDK_ROOT/licenses
           echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > $ANDROID_SDK_ROOT/licenses/android-sdk-license
-          sdkmanager --no_https "platforms;android-33" "build-tools;33.0.2" "build-tools;30.0.3" || true
+          # 安装 SDK 组件
+          sdkmanager --sdk_root=$ANDROID_SDK_ROOT --no_https "platforms;android-33" "build-tools;33.0.2" "build-tools;30.0.3" "platform-tools"
 
       # 4. 克隆项目
       - id: get-project
-        name: 克隆项目
+        name: 读取并克隆项目
         run: |
+          if [ ! -f "project-to-build" ]; then
+            echo "❌ 未找到 project-to-build 文件"
+            exit 1
+          fi
           PROJECT_URL=$(cat project-to-build | tr -d ' \n\r')
           rm -rf 项目
-          git clone --depth=1 $PROJECT_URL 项目
-          echo "✅ 项目克隆完成"
+          git clone --depth=1 $PROJECT_URL 项目 || { echo "❌ 克隆失败"; exit 1; }
 
-      # 5. 全局替换 Windows Python 路径
-      - name: 全局替换 Python 路径
+      # 5. 核心修复：全局替换 Windows Python 路径（覆盖所有模块）
+      - name: 全局替换 Python 路径（含 pyramid 模块）
         working-directory: ./项目
         run: |
+          # 递归替换所有配置文件中的 Windows 路径
           find . -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "gradle.properties" \) | \
             xargs sed -i 's#D:/Programs/Python/Python38/python.exe#/usr/bin/python#g'
           
+          # 生成全局 local.properties，优先级最高
           cat > local.properties << EOF
           sdk.dir=${{ env.ANDROID_SDK_ROOT }}
           chaquopy.python.buildPython=/usr/bin/python
           chaquopy.python.version=3.8
-          org.gradle.java.home=/usr/lib/jvm/temurin-11-jdk-amd64
+          org.gradle.java.home=/usr/lib/jvm/java-11-openjdk-amd64
           pyramid.chaquopy.python.buildPython=/usr/bin/python
           EOF
+          
+          # 验证替换结果
+          grep -r "D:/Programs/Python/Python38/python.exe" . || echo "✅ 无残留 Windows 路径"
 
-      # 6. 构建 APK
-      - name: 构建应用（normalDebug 变体）
+      # 6. 构建 APK + 优化查找逻辑
+      - name: 构建应用并查找 APK
         working-directory: ./项目
         run: |
+          # 初始化 Gradle Wrapper
           if [ ! -f "gradlew" ]; then
             gradle wrapper --gradle-version 7.5 --distribution-type bin
           fi
           chmod +x gradlew
           
-          # 执行构建
+          # 执行构建（关闭守护进程，降低资源占用）
           ./gradlew assembleNormalDebug --no-daemon --stacktrace --max-workers 1
           
-          # ========== 核心修复：优化 APK 查找逻辑 ==========
-          echo "📝 列出项目中所有文件（用于排查 APK 路径）："
-          find . -type f | grep -E "\.apk$" | tee /tmp/apk_list.txt
-          
-          # 规则1：匹配所有 debug APK（不限制命名）
+          # 精准查找 APK：先匹配 debug 再匹配所有
           APK_FILES=$(find . -name "*.apk" -type f | grep -i debug)
-          
-          # 规则2：如果没找到，扩大匹配范围（所有 APK）
           if [ -z "$APK_FILES" ]; then
             APK_FILES=$(find . -name "*.apk" -type f)
           fi
           
-          # 验证并输出结果
+          # 结果验证
           if [ -n "$APK_FILES" ]; then
-            echo -e "\n✅ 构建成功！找到以下 APK 文件："
+            echo -e "\n✅ 构建成功！APK 文件："
             ls -lh $APK_FILES
-            # 将 APK 路径写入环境变量，方便后续上传
             echo "APK_PATHS=$APK_FILES" >> $GITHUB_ENV
           else
-            echo -e "\n❌ 未找到 APK 文件，打印构建输出目录："
+            echo -e "\n❌ 未找到 APK，打印输出目录："
             ls -lh ./app/build/outputs/
             exit 1
           fi
 
-      # 7. 上传 APK
-      - name: 上传 APK
+      # 7. 上传 APK 产物
+      - name: 上传 APK 到 Artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-normal-debug-apk
