@@ -12,17 +12,17 @@ jobs:
       - name: 查看代码
         uses: actions/checkout@v4
 
-      # 手动配置 JDK 8 环境（完全绕开 setup-java 的缓存扫描）
-      - name: 手动配置 JDK 8 环境
+      # 核心修改：配置 JDK 11（满足 Android Gradle 插件要求）
+      - name: 手动配置 JDK 11 环境
         run: |
-          # 安装 JDK 8（GitHub Ubuntu 环境预装了 temurin-8）
-          sudo update-alternatives --set java /usr/lib/jvm/temurin-8-jdk-amd64/bin/java
-          sudo update-alternatives --set javac /usr/lib/jvm/temurin-8-jdk-amd64/bin/javac
+          # 安装 JDK 11（GitHub Ubuntu 环境预装了 temurin-11）
+          sudo update-alternatives --set java /usr/lib/jvm/temurin-11-jdk-amd64/bin/java
+          sudo update-alternatives --set javac /usr/lib/jvm/temurin-11-jdk-amd64/bin/javac
           # 配置环境变量
-          echo "JAVA_HOME=/usr/lib/jvm/temurin-8-jdk-amd64" >> $GITHUB_ENV
+          echo "JAVA_HOME=/usr/lib/jvm/temurin-11-jdk-amd64" >> $GITHUB_ENV
           echo "PATH=$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
-          # 禁用 Gradle 守护进程（核心：避免 --add-opens 参数）
-          echo "GRADLE_OPTS=-Xmx2048m -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx2048m" >> $GITHUB_ENV
+          # 配置 Gradle 环境（适配 JDK 11）
+          echo "GRADLE_OPTS=-Xmx2048m -Dorg.gradle.daemon=false" >> $GITHUB_ENV
           # 验证 JDK 版本
           java -version
           javac -version
@@ -88,19 +88,19 @@ jobs:
           sdkmanager --no_https "platforms;android-33" "build-tools;33.0.2" || true
           echo "✅ SDK 组件安装完成"
 
-      # 构建应用程序（核心：强制使用兼容 JDK 8 的 Gradle 版本）
+      # 构建应用程序（适配 JDK 11 + Gradle 7.x）
       - name: 构建应用程序
         working-directory: ./项目
         run: |
-          # 关键：初始化 Gradle Wrapper 为兼容 JDK 8 的版本（6.9.4 是最后支持 JDK 8 的稳定版）
+          # 初始化 Gradle Wrapper 为兼容 JDK 11 的版本（7.5 稳定版）
           if [ ! -f "gradlew" ]; then
-            echo "🔧 初始化兼容 JDK 8 的 Gradle Wrapper（6.9.4）..."
-            gradle wrapper --gradle-version 6.9.4 --distribution-type bin
+            echo "🔧 初始化兼容 JDK 11 的 Gradle Wrapper（7.5）..."
+            gradle wrapper --gradle-version 7.5 --distribution-type bin
           fi
           # 添加执行权限
           chmod +x gradlew
-          # 执行构建（禁用守护进程 + 移除不兼容的 JVM 参数）
-          ./gradlew assembleDebug --stacktrace --no-daemon --no-jvm-opts --max-workers 2
+          # 执行构建（禁用守护进程，适配 JDK 11）
+          ./gradlew assembleDebug --stacktrace --no-daemon --max-workers 2
           
           # 检查 APK 文件是否生成
           APK_FILES=$(find . -name '*.apk' -type f)
