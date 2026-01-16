@@ -6,13 +6,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # 延长超时适配编译
+    timeout-minutes: 120
 
     steps:
       - name: 查看代码
         uses: actions/checkout@v4
 
-      # 1. 系统环境准备（源码编译 Python 3.8，避开 PPA 源）
+      # 1. 系统环境准备（源码编译 Python 3.8）
       - name: 安装依赖并编译 Python 3.8
         run: |
           sudo apt update
@@ -21,50 +21,51 @@ jobs:
             libssl-dev libreadline-dev libffi-dev libbz2-dev wget openjdk-11-jdk \
             unzip python3-pip python3-setuptools python3-wheel
           
-          # 下载 Python 3.8.19 源码
+          # 下载并编译 Python 3.8.19
           wget https://www.python.org/ftp/python/3.8.19/Python-3.8.19.tgz -O /tmp/python38.tgz
           tar -xf /tmp/python38.tgz -C /tmp
-          
-          # 编译安装（不覆盖系统 Python）
           cd /tmp/Python-3.8.19
           ./configure --enable-optimizations --prefix=/usr/local/python38 --with-ensurepip=install
           make -j$(nproc)
           sudo make install
           
-          # 创建软链接，统一命令
+          # 创建软链接
           sudo ln -sf /usr/local/python38/bin/python3.8 /usr/bin/python
           sudo ln -sf /usr/local/python38/bin/pip3.8 /usr/bin/pip
-          
-          # 升级工具链
           pip install --upgrade pip setuptools wheel
           python --version
-          pip --version
 
-      # 2. 配置 JDK 11（Gradle 7.5 兼容）
-      - name: 配置 JDK 11 环境
+      # 2. 配置 JDK 11 环境
+      - name: 配置 JDK 11
         run: |
           sudo update-alternatives --set java /usr/lib/jvm/java-11-openjdk-amd64/bin/java
           sudo update-alternatives --set javac /usr/lib/jvm/java-11-openjdk-amd64/bin/javac
           echo "JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64" >> $GITHUB_ENV
           echo "GRADLE_OPTS=-Xmx4g -Dorg.gradle.daemon=false" >> $GITHUB_ENV
 
-      # 3. 配置 Android SDK（手动下载，避免版本问题）
-      - name: 配置 Android SDK 环境
+      # 3. 配置 Android SDK（核心：安装到家目录，避开权限问题）
+      - name: 配置 Android SDK 环境（家目录版）
         run: |
-          ANDROID_SDK_ROOT="/usr/local/android-sdk"
+          # 核心修改：SDK 安装到 runner 家目录，无需 sudo
+          ANDROID_SDK_ROOT="$HOME/android-sdk"
+          # 直接创建目录（家目录有完全权限）
           mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+          
           # 下载命令行工具
           wget https://dl.google.com/android/repository/commandlinetools-linux-10406996_latest.zip -O /tmp/sdk-tools.zip
           unzip -q /tmp/sdk-tools.zip -d $ANDROID_SDK_ROOT/cmdline-tools
           mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
-          # 环境变量
+          
+          # 配置环境变量（关键：使用家目录路径）
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH" >> $GITHUB_ENV
-          # 接受许可
+          
+          # 接受 SDK 许可（家目录直接创建，无权限问题）
           mkdir -p $ANDROID_SDK_ROOT/licenses
           echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > $ANDROID_SDK_ROOT/licenses/android-sdk-license
-          # 安装 SDK 组件
+          
+          # 安装 SDK 组件（无需 sudo）
           sdkmanager --sdk_root=$ANDROID_SDK_ROOT --no_https "platforms;android-33" "build-tools;33.0.2" "build-tools;30.0.3" "platform-tools"
 
       # 4. 克隆项目
@@ -79,15 +80,14 @@ jobs:
           rm -rf 项目
           git clone --depth=1 $PROJECT_URL 项目 || { echo "❌ 克隆失败"; exit 1; }
 
-      # 5. 核心修复：全局替换 Windows Python 路径（覆盖所有模块）
+      # 5. 全局替换 Python 路径
       - name: 全局替换 Python 路径（含 pyramid 模块）
         working-directory: ./项目
         run: |
-          # 递归替换所有配置文件中的 Windows 路径
           find . -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "gradle.properties" \) | \
             xargs sed -i 's#D:/Programs/Python/Python38/python.exe#/usr/bin/python#g'
           
-          # 生成全局 local.properties，优先级最高
+          # 核心：local.properties 中使用家目录的 SDK 路径
           cat > local.properties << EOF
           sdk.dir=${{ env.ANDROID_SDK_ROOT }}
           chaquopy.python.buildPython=/usr/bin/python
@@ -96,29 +96,25 @@ jobs:
           pyramid.chaquopy.python.buildPython=/usr/bin/python
           EOF
           
-          # 验证替换结果
           grep -r "D:/Programs/Python/Python38/python.exe" . || echo "✅ 无残留 Windows 路径"
 
       # 6. 构建 APK + 优化查找逻辑
       - name: 构建应用并查找 APK
         working-directory: ./项目
         run: |
-          # 初始化 Gradle Wrapper
           if [ ! -f "gradlew" ]; then
             gradle wrapper --gradle-version 7.5 --distribution-type bin
           fi
           chmod +x gradlew
           
-          # 执行构建（关闭守护进程，降低资源占用）
           ./gradlew assembleNormalDebug --no-daemon --stacktrace --max-workers 1
           
-          # 精准查找 APK：先匹配 debug 再匹配所有
+          # 查找 APK
           APK_FILES=$(find . -name "*.apk" -type f | grep -i debug)
           if [ -z "$APK_FILES" ]; then
             APK_FILES=$(find . -name "*.apk" -type f)
           fi
           
-          # 结果验证
           if [ -n "$APK_FILES" ]; then
             echo -e "\n✅ 构建成功！APK 文件："
             ls -lh $APK_FILES
@@ -129,7 +125,7 @@ jobs:
             exit 1
           fi
 
-      # 7. 上传 APK 产物
+      # 7. 上传 APK
       - name: 上传 APK 到 Artifact
         uses: actions/upload-artifact@v4
         with:
