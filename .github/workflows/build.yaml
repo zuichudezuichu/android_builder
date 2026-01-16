@@ -12,7 +12,7 @@ jobs:
       - name: 查看代码
         uses: actions/checkout@v4
 
-      # 1. 安装 Python 3.8（适配 Ubuntu 24.04）
+      # 1. 安装 Python 3.8 环境
       - name: 安装 Python 3.8 环境
         run: |
           sudo apt update
@@ -52,31 +52,23 @@ jobs:
           git clone --depth=1 $PROJECT_URL 项目
           echo "✅ 项目克隆完成"
 
-      # 5. 核心修复：全局替换 Windows Python 路径（包括 pyramid 模块）
-      - name: 全局替换 Python 路径（关键步骤）
+      # 5. 全局替换 Windows Python 路径
+      - name: 全局替换 Python 路径
         working-directory: ./项目
         run: |
-          # 1. 递归替换所有 build.gradle/gradle.properties 中的 Windows Python 路径
           find . -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "gradle.properties" \) | \
             xargs sed -i 's#D:/Programs/Python/Python38/python.exe#/usr/bin/python#g'
           
-          # 2. 生成全局生效的 local.properties（覆盖所有模块）
           cat > local.properties << EOF
           sdk.dir=${{ env.ANDROID_SDK_ROOT }}
-          # 强制所有模块使用 Linux Python
           chaquopy.python.buildPython=/usr/bin/python
           chaquopy.python.version=3.8
           org.gradle.java.home=/usr/lib/jvm/temurin-11-jdk-amd64
-          # 针对 pyramid 模块单独配置
           pyramid.chaquopy.python.buildPython=/usr/bin/python
           EOF
-          
-          # 3. 验证替换结果（可选，用于排查）
-          echo "✅ 验证替换结果："
-          grep -r "D:/Programs/Python/Python38/python.exe" . || echo "✅ 未找到残留的 Windows Python 路径"
 
-      # 6. 构建 APK（仅构建 normalDebug 避免 PythonDebug 干扰，或按需调整）
-      - name: 构建应用（优先构建成功的 normalDebug 变体）
+      # 6. 构建 APK
+      - name: 构建应用（normalDebug 变体）
         working-directory: ./项目
         run: |
           if [ ! -f "gradlew" ]; then
@@ -84,19 +76,30 @@ jobs:
           fi
           chmod +x gradlew
           
-          # 重点：只构建 normalDebug 变体（避开失败的 PythonDebug），或根据需求调整
-          ./gradlew assembleNormalDebug \
-            --no-daemon \
-            --stacktrace \
-            --max-workers 1
+          # 执行构建
+          ./gradlew assembleNormalDebug --no-daemon --stacktrace --max-workers 1
           
-          # 检查 APK
-          APK_FILES=$(find . -name "*normalDebug*.apk" -type f)
+          # ========== 核心修复：优化 APK 查找逻辑 ==========
+          echo "📝 列出项目中所有文件（用于排查 APK 路径）："
+          find . -type f | grep -E "\.apk$" | tee /tmp/apk_list.txt
+          
+          # 规则1：匹配所有 debug APK（不限制命名）
+          APK_FILES=$(find . -name "*.apk" -type f | grep -i debug)
+          
+          # 规则2：如果没找到，扩大匹配范围（所有 APK）
+          if [ -z "$APK_FILES" ]; then
+            APK_FILES=$(find . -name "*.apk" -type f)
+          fi
+          
+          # 验证并输出结果
           if [ -n "$APK_FILES" ]; then
-            echo "✅ 构建成功！APK 文件："
+            echo -e "\n✅ 构建成功！找到以下 APK 文件："
             ls -lh $APK_FILES
+            # 将 APK 路径写入环境变量，方便后续上传
+            echo "APK_PATHS=$APK_FILES" >> $GITHUB_ENV
           else
-            echo "❌ 未找到 APK 文件"
+            echo -e "\n❌ 未找到 APK 文件，打印构建输出目录："
+            ls -lh ./app/build/outputs/
             exit 1
           fi
 
@@ -105,5 +108,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-normal-debug-apk
-          path: ./项目/**/*normalDebug*.apk
+          path: ${{ env.APK_PATHS }}
           retention-days: 14
