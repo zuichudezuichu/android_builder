@@ -1,32 +1,85 @@
 name: android_build
 
+# 触发方式：手动触发
 on:
   workflow_dispatch:
 
+# 定义工作任务
 jobs:
   build:
+    # 指定运行环境为最新版 Ubuntu
     runs-on: ubuntu-latest
+    # 设置构建超时时间（可选，防止无限运行）
+    timeout-minutes: 60
+
     steps:
-      - name: Checkout the code
-        uses: actions/checkout@v2
-      - name: Set up JDK
-        uses: actions/setup-java@v1
+      # 1. 检出代码到工作目录
+      - name: 查看代码
+        uses: actions/checkout@v4  # 更新到最新稳定版 v4
+
+      # 2. 设置 JDK 环境（更新到 v4 版本，适配现代语法）
+      - name: 设置 JDK
+        uses: actions/setup-java@v4
         with:
-          java-version: 1.8
+          java-version: '8'        # 修正语法：Java 版本 → java-version
+          distribution: 'temurin' # 指定 JDK 发行版（推荐使用 Eclipse Temurin）
+          cache: 'gradle'          # 缓存 Gradle 依赖，加速后续构建
+
+      # 3. 获取项目名称（更新输出语法为 GitHub Actions 现代写法）
       - id: get-project
-        name: Get project name
-        run: echo "::set-output name=PROJECT::$(cat project-to-build)"
-      - name: Clone project
-        run: git clone --depth=1 ${{ steps.get-project.outputs.PROJECT }} project
-      - name: Build the app
-        working-directory: ./project
+        name: 获取项目名称
         run: |
-          if [ ! -f "gradlew" ]; then gradle wrapper; fi
+          # 检查 project-to-build 文件是否存在
+          if [ ! -f "project-to-build" ]; then
+            echo "错误：project-to-build 文件不存在！"
+            exit 1
+          fi
+          # 使用现代语法设置输出变量
+          PROJECT_NAME=$(cat project-to-build)
+          echo "PROJECT=$PROJECT_NAME" >> $GITHUB_OUTPUT
+          echo "即将克隆的项目地址：$PROJECT_NAME"
+
+      # 4. 克隆目标项目
+      - name: 克隆项目
+        run: |
+          # 检查项目地址是否为空
+          if [ -z "${{ steps.get-project.outputs.PROJECT }}" ]; then
+            echo "错误：项目地址为空！"
+            exit 1
+          fi
+          # 克隆项目（--depth=1 只克隆最新提交，节省时间）
+          git clone --depth=1 ${{ steps.get-project.outputs.PROJECT }} 项目
+          # 检查克隆是否成功
+          if [ ! -d "项目" ]; then
+            echo "错误：项目克隆失败！"
+            exit 1
+          fi
+
+      # 5. 构建 Android 应用（Debug 版本）
+      - name: 构建应用程序
+        working-directory: ./项目  # 修正语法：工作目录 → working-directory
+        run: |
+          # 检查 gradlew 是否存在，不存在则初始化
+          if [ ! -f "gradlew" ]; then
+            echo "未找到 gradlew，正在初始化 Gradle Wrapper..."
+            gradle wrapper
+          fi
+          # 添加执行权限
           chmod +x gradlew
+          # 构建 Debug 版本（--stacktrace 便于调试错误）
           ./gradlew assembleDebug --stacktrace
-      - name: Upload APK
-        uses: actions/upload-artifact@v2
+          # 检查构建产物是否存在
+          if [ -z "$(find . -name '*.apk' -type f)" ]; then
+            echo "错误：APK 构建失败，未找到 APK 文件！"
+            exit 1
+          fi
+
+      # 6. 上传构建好的 APK 文件
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4  # 更新到最新稳定版 v4
         with:
           name: my-build-apk
-          path: ./**/*.apk
-
+          path: |
+            ./项目/**/*.apk  # 精准匹配项目目录下的所有 APK
+          retention-days: 7  # 设置产物保留 7 天（可选）
+          if-no-files-found: error  # 未找到文件时直接报错
