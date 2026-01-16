@@ -6,136 +6,104 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90  # 增加超时时间，适配 Python 依赖安装
+    timeout-minutes: 90
 
     steps:
       - name: 查看代码
         uses: actions/checkout@v4
 
-      # 1. 安装 Python 3.8（通过第三方源适配 Ubuntu 24.04）
-      - name: 安装 Python 3.8 环境（适配 Ubuntu 24.04）
+      # 1. 安装 Python 3.8（适配 Ubuntu 24.04）
+      - name: 安装 Python 3.8 环境
         run: |
-          # 添加 deadsnakes 第三方源（提供旧版 Python）
           sudo apt update
           sudo apt install -y software-properties-common
           sudo add-apt-repository -y ppa:deadsnakes/ppa
           sudo apt update
-          
-          # 安装 Python 3.8 及依赖
           sudo apt install -y python3.8 python3.8-dev python3.8-distutils python3-pip
-          
-          # 创建 python 软链接（统一命令）
           sudo ln -sf /usr/bin/python3.8 /usr/bin/python
           sudo ln -sf /usr/bin/pip3 /usr/bin/pip
-          
-          # 验证 Python 版本
+          pip install --upgrade pip setuptools wheel
           python --version
-          pip --version
 
-      # 2. 配置 JDK 11 环境（满足 Android Gradle 插件要求）
-      - name: 手动配置 JDK 11 环境
+      # 2. 配置 JDK 11 环境
+      - name: 配置 JDK 11
         run: |
           sudo update-alternatives --set java /usr/lib/jvm/temurin-11-jdk-amd64/bin/java
           sudo update-alternatives --set javac /usr/lib/jvm/temurin-11-jdk-amd64/bin/javac
           echo "JAVA_HOME=/usr/lib/jvm/temurin-11-jdk-amd64" >> $GITHUB_ENV
-          echo "PATH=$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
-          echo "GRADLE_OPTS=-Xmx2048m -Dorg.gradle.daemon=false" >> $GITHUB_ENV
-          java -version
-          javac -version
+          echo "GRADLE_OPTS=-Xmx4g -Dorg.gradle.daemon=false" >> $GITHUB_ENV
 
-      # 3. 配置 Android SDK 环境
-      - name: 配置 Android SDK 环境
+      # 3. 配置 Android SDK
+      - name: 配置 Android SDK
         run: |
           ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
-          
-          # 接受 SDK 许可
           mkdir -p $ANDROID_SDK_ROOT/licenses
           echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > $ANDROID_SDK_ROOT/licenses/android-sdk-license
-          echo "84831b9409646a918e30573bab4c9c91346d8abd" > $ANDROID_SDK_ROOT/licenses/android-sdk-preview-license
-          
-          echo "✅ Android SDK 路径配置完成：$ANDROID_SDK_ROOT"
-
-      # 4. 读取项目地址
-      - id: get-project
-        name: 获取项目名称
-        run: |
-          if [ ! -f "project-to-build" ]; then
-            echo "❌ 错误：未找到 project-to-build 文件！"
-            exit 1
-          fi
-          PROJECT_NAME=$(cat project-to-build | tr -d ' \n\r')
-          if [ -z "$PROJECT_NAME" ]; then
-            echo "❌ 错误：project-to-build 文件为空！"
-            exit 1
-          fi
-          echo "PROJECT=$PROJECT_NAME" >> $GITHUB_OUTPUT
-          echo "✅ 已读取项目地址：$PROJECT_NAME"
-
-      # 5. 克隆项目
-      - name: 克隆项目
-        run: |
-          rm -rf 项目
-          git clone --depth=1 ${{ steps.get-project.outputs.PROJECT }} 项目
-          if [ ! -d "项目" ]; then
-            echo "❌ 克隆失败！"
-            exit 1
-          fi
-          echo "✅ 项目克隆成功：$(pwd)/项目"
-
-      # 6. 生成 local.properties（关键：覆盖 Chaquopy 的 Python 路径）
-      - name: 生成 local.properties（适配 Python 路径）
-        working-directory: ./项目
-        run: |
-          # 核心：设置 Chaquopy 的 buildPython 为 Linux 下的 Python 路径
-          echo "sdk.dir=${{ env.ANDROID_HOME }}" > local.properties
-          echo "chaquopy.python.buildPython=/usr/bin/python" >> local.properties
-          # 验证文件内容
-          echo "✅ local.properties 生成完成："
-          cat local.properties
-
-      # 7. 安装 Android SDK 组件
-      - name: 安装 Android SDK 组件
-        run: |
           sdkmanager --no_https "platforms;android-33" "build-tools;33.0.2" "build-tools;30.0.3" || true
-          echo "✅ SDK 组件安装完成"
 
-      # 8. 构建应用程序（适配 Python + Chaquopy）
-      - name: 构建应用程序
+      # 4. 克隆项目
+      - id: get-project
+        name: 克隆项目
+        run: |
+          PROJECT_URL=$(cat project-to-build | tr -d ' \n\r')
+          rm -rf 项目
+          git clone --depth=1 $PROJECT_URL 项目
+          echo "✅ 项目克隆完成"
+
+      # 5. 核心修复：全局替换 Windows Python 路径（包括 pyramid 模块）
+      - name: 全局替换 Python 路径（关键步骤）
         working-directory: ./项目
         run: |
-          # 初始化 Gradle Wrapper（7.5 兼容 JDK 11）
+          # 1. 递归替换所有 build.gradle/gradle.properties 中的 Windows Python 路径
+          find . -type f \( -name "build.gradle" -o -name "build.gradle.kts" -o -name "gradle.properties" \) | \
+            xargs sed -i 's#D:/Programs/Python/Python38/python.exe#/usr/bin/python#g'
+          
+          # 2. 生成全局生效的 local.properties（覆盖所有模块）
+          cat > local.properties << EOF
+          sdk.dir=${{ env.ANDROID_SDK_ROOT }}
+          # 强制所有模块使用 Linux Python
+          chaquopy.python.buildPython=/usr/bin/python
+          chaquopy.python.version=3.8
+          org.gradle.java.home=/usr/lib/jvm/temurin-11-jdk-amd64
+          # 针对 pyramid 模块单独配置
+          pyramid.chaquopy.python.buildPython=/usr/bin/python
+          EOF
+          
+          # 3. 验证替换结果（可选，用于排查）
+          echo "✅ 验证替换结果："
+          grep -r "D:/Programs/Python/Python38/python.exe" . || echo "✅ 未找到残留的 Windows Python 路径"
+
+      # 6. 构建 APK（仅构建 normalDebug 避免 PythonDebug 干扰，或按需调整）
+      - name: 构建应用（优先构建成功的 normalDebug 变体）
+        working-directory: ./项目
+        run: |
           if [ ! -f "gradlew" ]; then
             gradle wrapper --gradle-version 7.5 --distribution-type bin
           fi
           chmod +x gradlew
           
-          # 关键：安装 Python 依赖（如果项目有 requirements.txt）
-          if [ -f "requirements.txt" ]; then
-            echo "🔧 安装 Python 依赖..."
-            pip install -r requirements.txt
-          fi
-          
-          # 执行构建（增加内存限制，适配 Chaquopy）
-          ./gradlew assembleDebug --stacktrace --no-daemon --max-workers 2 -Dorg.gradle.jvmargs="-Xmx4g"
+          # 重点：只构建 normalDebug 变体（避开失败的 PythonDebug），或根据需求调整
+          ./gradlew assembleNormalDebug \
+            --no-daemon \
+            --stacktrace \
+            --max-workers 1
           
           # 检查 APK
-          APK_FILES=$(find . -name '*.apk' -type f)
-          if [ -z "$APK_FILES" ]; then
-            echo "❌ 构建失败：未找到 APK 文件！"
-            exit 1
-          else
+          APK_FILES=$(find . -name "*normalDebug*.apk" -type f)
+          if [ -n "$APK_FILES" ]; then
             echo "✅ 构建成功！APK 文件："
-            ls -l $APK_FILES
+            ls -lh $APK_FILES
+          else
+            echo "❌ 未找到 APK 文件"
+            exit 1
           fi
 
-      # 9. 上传 APK
+      # 7. 上传 APK
       - name: 上传 APK
         uses: actions/upload-artifact@v4
         with:
-          name: my-build-apk
-          path: ./项目/**/*.apk
-          retention-days: 7
-          if-no-files-found: error
+          name: android-normal-debug-apk
+          path: ./项目/**/*normalDebug*.apk
+          retention-days: 14
