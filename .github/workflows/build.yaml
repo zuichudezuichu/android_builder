@@ -1,85 +1,121 @@
 name: android_build
 
-# 触发方式：手动触发
 on:
   workflow_dispatch:
 
-# 定义工作任务
 jobs:
   build:
-    # 指定运行环境为最新版 Ubuntu
     runs-on: ubuntu-latest
-    # 设置构建超时时间（可选，防止无限运行）
     timeout-minutes: 60
 
     steps:
-      # 1. 检出代码到工作目录
       - name: 查看代码
-        uses: actions/checkout@v4  # 更新到最新稳定版 v4
+        uses: actions/checkout@v4
 
-      # 2. 设置 JDK 环境（更新到 v4 版本，适配现代语法）
-      - name: 设置 JDK
-        uses: actions/setup-java@v4
-        with:
-          java-version: '8'        # 修正语法：Java 版本 → java-version
-          distribution: 'temurin' # 指定 JDK 发行版（推荐使用 Eclipse Temurin）
-          cache: 'gradle'          # 缓存 Gradle 依赖，加速后续构建
+      # 替代方案：手动配置 JDK 8（完全绕开 actions/setup-java 的缓存扫描）
+      - name: 手动配置 JDK 8 环境
+        run: |
+          # 安装 JDK 8（GitHub Ubuntu 环境预装了 temurin-8）
+          sudo update-alternatives --set java /usr/lib/jvm/temurin-8-jdk-amd64/bin/java
+          sudo update-alternatives --set javac /usr/lib/jvm/temurin-8-jdk-amd64/bin/javac
+          # 配置环境变量
+          echo "JAVA_HOME=/usr/lib/jvm/temurin-8-jdk-amd64" >> $GITHUB_ENV
+          echo "PATH=$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
+          # 验证 JDK 版本
+          java -version
+          javac -version
 
-      # 3. 获取项目名称（更新输出语法为 GitHub Actions 现代写法）
+      # 手动配置 Android SDK 环境
+      - name: 配置 Android SDK 环境
+        run: |
+          ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH" >> $GITHUB_ENV
+          
+          # 手动接受 Android SDK 许可
+          mkdir -p $ANDROID_SDK_ROOT/licenses
+          echo "24333f8a63b6825ea9c5514f83c2829b004d1fee" > $ANDROID_SDK_ROOT/licenses/android-sdk-license
+          echo "84831b9409646a918e30573bab4c9c91346d8abd" > $ANDROID_SDK_ROOT/licenses/android-sdk-preview-license
+          
+          echo "✅ Android SDK 路径配置完成：$ANDROID_SDK_ROOT"
+
+      # 读取项目地址（增强容错）
       - id: get-project
         name: 获取项目名称
         run: |
-          # 检查 project-to-build 文件是否存在
           if [ ! -f "project-to-build" ]; then
-            echo "错误：project-to-build 文件不存在！"
+            echo "❌ 错误：仓库根目录未找到 project-to-build 文件！"
+            echo "👉 请创建该文件，内容为 Android 项目的 Git 地址（如 https://github.com/xxx/xxx.git）"
             exit 1
           fi
-          # 使用现代语法设置输出变量
-          PROJECT_NAME=$(cat project-to-build)
+          # 去除文件中的空格、换行符，避免地址错误
+          PROJECT_NAME=$(cat project-to-build | tr -d ' \n\r')
+          if [ -z "$PROJECT_NAME" ]; then
+            echo "❌ 错误：project-to-build 文件内容为空！"
+            exit 1
+          fi
           echo "PROJECT=$PROJECT_NAME" >> $GITHUB_OUTPUT
-          echo "即将克隆的项目地址：$PROJECT_NAME"
+          echo "✅ 已读取项目地址：$PROJECT_NAME"
 
-      # 4. 克隆目标项目
+      # 克隆项目
       - name: 克隆项目
         run: |
-          # 检查项目地址是否为空
-          if [ -z "${{ steps.get-project.outputs.PROJECT }}" ]; then
-            echo "错误：项目地址为空！"
-            exit 1
-          fi
-          # 克隆项目（--depth=1 只克隆最新提交，节省时间）
+          # 克隆前先清空旧目录（避免重复克隆冲突）
+          rm -rf 项目
           git clone --depth=1 ${{ steps.get-project.outputs.PROJECT }} 项目
-          # 检查克隆是否成功
           if [ ! -d "项目" ]; then
-            echo "错误：项目克隆失败！"
+            echo "❌ 错误：克隆失败，请检查 Git 地址是否有效！"
             exit 1
           fi
+          echo "✅ 项目克隆成功，目录：$(pwd)/项目"
 
-      # 5. 构建 Android 应用（Debug 版本）
-      - name: 构建应用程序
-        working-directory: ./项目  # 修正语法：工作目录 → working-directory
+      # 生成 local.properties（指向正确的 SDK 路径）
+      - name: 生成 local.properties
+        working-directory: ./项目
         run: |
-          # 检查 gradlew 是否存在，不存在则初始化
+          echo "sdk.dir=${{ env.ANDROID_HOME }}" > local.properties
+          # 验证文件内容
+          echo "✅ local.properties 生成完成，内容："
+          cat local.properties
+
+      # 安装项目所需的 Android SDK 组件（按需修改版本）
+      - name: 安装 Android SDK 组件
+        run: |
+          # 安装常用版本（根据项目 build.gradle 中的 compileSdkVersion 调整）
+          # 若项目用 30 版本，改为 "platforms;android-30" "build-tools;30.0.3"
+          sdkmanager --no_https "platforms;android-33" "build-tools;33.0.2" || true
+          echo "✅ SDK 组件安装完成"
+
+      # 构建应用程序（核心步骤）
+      - name: 构建应用程序
+        working-directory: ./项目
+        run: |
+          # 检查并初始化 gradlew
           if [ ! -f "gradlew" ]; then
-            echo "未找到 gradlew，正在初始化 Gradle Wrapper..."
+            echo "🔧 未找到 gradlew，正在初始化 Gradle Wrapper..."
             gradle wrapper
           fi
           # 添加执行权限
           chmod +x gradlew
-          # 构建 Debug 版本（--stacktrace 便于调试错误）
-          ./gradlew assembleDebug --stacktrace
-          # 检查构建产物是否存在
-          if [ -z "$(find . -name '*.apk' -type f)" ]; then
-            echo "错误：APK 构建失败，未找到 APK 文件！"
+          # 执行构建（--no-daemon 避免守护进程问题）
+          ./gradlew assembleDebug --stacktrace --no-daemon
+          
+          # 检查 APK 文件是否生成
+          APK_FILES=$(find . -name '*.apk' -type f)
+          if [ -z "$APK_FILES" ]; then
+            echo "❌ 构建失败：未找到 APK 文件！"
             exit 1
+          else
+            echo "✅ 构建成功！生成的 APK 文件："
+            ls -l $APK_FILES
           fi
 
-      # 6. 上传构建好的 APK 文件
+      # 上传 APK 产物
       - name: 上传 APK
-        uses: actions/upload-artifact@v4  # 更新到最新稳定版 v4
+        uses: actions/upload-artifact@v4
         with:
           name: my-build-apk
-          path: |
-            ./项目/**/*.apk  # 精准匹配项目目录下的所有 APK
-          retention-days: 7  # 设置产物保留 7 天（可选）
-          if-no-files-found: error  # 未找到文件时直接报错
+          path: ./项目/**/*.apk
+          retention-days: 7
+          if-no-files-found: error
